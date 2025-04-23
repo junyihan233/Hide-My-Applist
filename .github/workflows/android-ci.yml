@@ -1,57 +1,43 @@
-name: Android CI
+name: Xposed Release Build
 
 on:
+  workflow_dispatch: # 手动触发
   push:
-    branches: [ master ]
-  pull_request:
-    branches: [ master ]
+    tags: [ "v*" ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      ANDROID_API_LEVEL: 34
-      ANDROID_BUILD_TOOLS: 34.0.0
+      MODULE_NAME: "xposed"  # 明确指定模块名称
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v3
-      with:
-        java-version: 17
-        distribution: 'temurin'
-
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
-      with:
-        api-level: ${{ env.ANDROID_API_LEVEL }}
-        build-tools: ${{ env.ANDROID_BUILD_TOOLS }}
-
-    - name: Accept Android Licenses
+    - name: Setup Signing
+      env:
+        SIGNING_KEY_BASE64: ${{ secrets.XPOSED_SIGNING_KEY_BASE64 }}  # 单独为xposed模块配置
       run: |
-        yes | sdkmanager --licenses
+        mkdir -p $MODULE_NAME
+        echo "$SIGNING_KEY_BASE64" | base64 -d > $MODULE_NAME/module.jks  # 与脚本中的路径匹配
 
-    - name: Grant gradlew permissions
-      run: chmod +x ./gradlew
+    - name: Validate Keystore
+      run: |
+        file $MODULE_NAME/module.jks  # 验证文件类型
+        keytool -list -v -keystore $MODULE_NAME/module.jks -storepass ${{ secrets.XPOSED_STORE_PASSWORD }}
 
-    - name: Cache Gradle
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
-        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-        restore-keys: |
-          ${{ runner.os }}-gradle-
+    - name: Build Release
+      env:
+        ORG_GRADLE_PROJECT_storeFile: "$MODULE_NAME/module.jks"  # Gradle属性注入
+        ORG_GRADLE_PROJECT_storePassword: "${{ secrets.XPOSED_STORE_PASSWORD }}"
+        ORG_GRADLE_PROJECT_keyAlias: "${{ secrets.XPOSED_KEY_ALIAS }}"
+        ORG_GRADLE_PROJECT_keyPassword: "${{ secrets.XPOSED_KEY_PASSWORD }}"
+      run: |
+        ./gradlew :$MODULE_NAME:assembleRelease --stacktrace
+        ls -l $MODULE_NAME/build/outputs/apk/release/
 
-    - name: Build APK
-      run: ./gradlew :app:assembleDebug
-
-    - name: Upload APK
+    - name: Upload Artifact
       uses: actions/upload-artifact@v3
       with:
-        name: hidemyapplist-debug
-        path: app/build/outputs/apk/debug/app-debug.apk
-        retention-days: 7
+        name: xposed-release
+        path: ${{ env.MODULE_NAME }}/build/outputs/apk/release/*.apk
